@@ -1,84 +1,23 @@
 
+import os
 import pandas as pd
 import numpy as np
 import math
-from gluonts.time_feature.holiday import SpecialDateFeatureSet, CHRISTMAS_DAY, CHRISTMAS_EVE
+import matplotlib.pyplot as plt
+import json
+from gluonts.time_feature import (
+    day_of_week,
+    day_of_month,
+    day_of_year,
+    week_of_year,
+    month_of_year,
+)
 from gluonts.dataset.repository import get_dataset, dataset_names
 from gluonts.dataset.util import to_pandas
-from gluonts.mx import SimpleFeedForwardEstimator, Trainer
-from gluonts.evaluation import make_evaluation_predictions
 from gluonts.dataset.common import ListDataset
 from gluonts.dataset.pandas import PandasDataset
-from gluonts.mx import DeepAREstimator, Trainer
-from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.field_names import FieldName
-from gluonts.mx.trainer.callback import TrainingHistory
 from sklearn.preprocessing import LabelEncoder
-
-def convert_duration_to_time_window(duration_str, time_window='1H'):
-    """
-    Convert charging duration from hh:mm:ss format to the specified time window unit.
-    
-    Parameters:
-        duration_str (str): The charging duration in hh:mm:ss format.
-        time_window (str): The time window for conversion. Can be '1H', '1D', '1W', or '1M'.
-        
-    Returns:
-        float: The total hours converted to the specified time window unit.
-    """
-    # Convert seconds to total hours
-    total_hours = pd.Timedelta(duration_str).total_seconds() / 3600
-    
-    # Convert based on the specified time window
-    if time_window == '1H':
-        return total_hours
-    elif time_window == '1D':
-        return total_hours / 24
-    elif time_window == '1W':
-        return total_hours / (24 * 7)
-    elif time_window == '1M':
-        return total_hours / (24 * 30)
-    else:
-        raise ValueError("Unsupported time window. Choose from '1H', '1D', '1W', '1M'.")
-
-def aggregate_ev_charging(data, time_window = '1D'):
-    """
-    Aggregate energy consumption, total charging duration, and count EV charging events
-    within specified time windows.
-    
-    Parameters:
-        data (pd.DataFrame): The EV charging data.
-        time_window (str): The time window for aggregation. Can be '1H', '1D', '1W', or '1M'.
-    
-    Returns:
-        pd.DataFrame: Aggregated data with total energy, total charging duration, and count of events.
-    """
-    dataframe = data.copy()
-    
-    dataframe['Start Date'] = pd.to_datetime(dataframe['Start Date'], errors='coerce')
-    dataframe = dataframe.dropna(subset=['Start Date'])
-    
-    dataframe.set_index('Start Date', inplace=True)
-    
-    # Convert Charging Time to time hours
-    dataframe[f'Charging Time ({time_window})'] = dataframe['Charging Time (hh:mm:ss)'].apply(convert_duration_to_time_window, time_window=time_window)
-    
-    # Resample and aggregate data
-    aggregated_data = dataframe.groupby('Station Name').resample(time_window).agg({
-        'Energy (kWh)': 'sum',
-        f'Charging Time ({time_window})': 'sum',
-        'User ID': 'count'  # Count of events
-    })
-    
-    aggregated_data.rename(columns={
-        'Energy (kWh)': 'Total Energy (kWh)',
-        f'Charging Time ({time_window})': f'Total Charging Duration ({time_window})',
-        'User ID': 'Event Count'
-    }, inplace=True)
-
-    # aggregated_data.set_index('Start Date', inplace=True)
-    
-    return aggregated_data.reset_index()
 
 def multiple_time_series(data, target, fields):
     """
@@ -122,7 +61,22 @@ def handle_missing_data(testData, freq, target_column):
         new_index = pd.date_range(gdf.index[0], end=max_end, freq=freq)
         dfs_dict[item_id] = gdf.reindex(new_index).drop("item_id", axis=1)
         dfs_dict[item_id][np.isnan(dfs_dict[item_id])] = 0
+    return dfs_dict
 
+def generate_counts_duration(dfs_dict):
+    """
+    Generate two features: counts and duration, and ds
+    
+    Parameters:
+        dfs_dict
+        
+    Returns:
+        counts and duration
+    """
+    ds = PandasDataset(dfs_dict, target="target")
+    counts = np.array([dfs_dict[item].loc[:, "Event Count"].to_numpy() for item in dfs_dict])
+    charge_duration = np.array([dfs_dict[item].loc[:, "Total Charging Duration (1D)"].to_numpy() for item in dfs_dict])
+    return ds, counts, charge_duration
 
 def train_test_split(ds, train_val_test_split):
 
@@ -132,8 +86,12 @@ def train_test_split(ds, train_val_test_split):
 
     return train_length, validation_length, prediction_length
 
+def get_min_max_date(testData):
+    start_date = testData.index.min()
+    end_date = testData.index.max()
+    return start_date, end_date
 
-def add_multiple_features(EVdata, freq):
+def add_multiple_features(ds, start_date, end_date, freq):
     """
     Add temporal and additional features for EV charging data.
     
@@ -145,9 +103,6 @@ def add_multiple_features(EVdata, freq):
         Tuple: Contains multiple arrays for features like day of week, day of month, etc.
     """
     
-    start_date = EVdata.index.min()
-    end_date = EVdata.index.max()
-    
     date_indices = pd.date_range(start=start_date, end=end_date, freq=freq)
     
     day_of_week_variable = np.array([day_of_week(date_indices) for item in ds])
@@ -158,8 +113,207 @@ def add_multiple_features(EVdata, freq):
     
     return day_of_week_variable, day_of_month_variable, day_of_year_variable, week_of_year_variable, month_of_year_variable
 
-# Example usage:
-# df_aggregated = aggregate_ev_charging(EVdf0, time_window='1H')
-# multiple_ts = multiple_time_series(df_aggregated, target="Total Energy (1H)", fields=["Station Name", "Event Count", "Total Energy (1H)", "Total Charging Duration (1H)"])
-# missing_data_handled = handle_missing_data(multiple_ts, freq="1H", target_column="Total Energy (1H)")
-# features = add_multiple_features(missing_data_handled, freq="1H")
+def pad_time_series(ds, counts, charge_duration, start_date, freq):
+    """
+    Pads the time series data to the specified maximum length.
+    
+    Parameters:
+        target_list (list): List of target arrays to be padded.
+        max_length (int): The maximum length to pad the arrays to.
+        
+    Returns:
+        np.array: Padded and stacked array of time series.
+    """
+    max_length = max(len(item['target']) for item in ds)
+    padded_targets = [np.pad(arr['target'], (max_length - len(arr['target']), 0), mode='constant') for arr in ds]
+    padded_targets_stack = np.vstack(padded_targets)
+
+    max_length_counts = max(len(item) for item in counts)
+    padded_counts = [np.pad(arr, (max_length_counts - len(arr), 0), mode='constant') for arr in counts]
+    padded_counts_stack = np.vstack(padded_counts)
+
+    max_length_duration = max(len(item) for item in charge_duration)
+    padded_duration = [np.pad(arr, (max_length_duration - len(arr), 0), mode='constant') for arr in charge_duration]
+    padded_duration_stack = np.vstack(padded_duration)
+
+    start_date_period = pd.Period(start_date, freq=freq)
+    start_stack = [start_date_period for _ in range(len(padded_targets_stack))]
+
+    return padded_targets_stack, padded_counts_stack, padded_duration_stack, start_stack
+
+def create_datasets(padded_targets_stack, start_stack, padded_counts_stack, 
+                    padded_duration_stack,
+                    day_of_week_variable, month_of_year_variable, 
+                    train_length, prediction_length, freq):
+    """
+    Creates training, validation, and test datasets for time series forecasting.
+    
+    Parameters:
+        padded_targets_stack (np.array): Array of target values.
+        start_stack (list): List of start dates.
+        padded_counts_stack (np.array): Array of padded event counts.
+        padded_duration_stack (np.array): Array of padded charging durations.
+        day_of_week_variable (np.array): Day of week features.
+        month_of_year_variable (np.array): Month of year features.
+        train_length (int): Length of training data.
+        prediction_length (int): Length of prediction data.
+        freq (str): Frequency of the data.
+        
+    Returns:
+        Tuple: Training, validation, and test datasets.
+    """
+    train_ds = ListDataset(
+        [
+            {
+                FieldName.TARGET: target,
+                FieldName.START: start,
+                FieldName.FEAT_DYNAMIC_REAL: [counts, duration, dayofweek, monthofyear],
+            }
+            for (target, start, counts, duration, dayofweek, monthofyear) in zip(
+                padded_targets_stack[:, :train_length],
+                start_stack,
+                padded_counts_stack[:, :train_length],
+                padded_duration_stack[:, :train_length],
+                day_of_week_variable[:, :train_length],
+                month_of_year_variable[:, :train_length]
+            )
+        ],
+        freq=freq,
+    )
+
+    val_ds = ListDataset(
+        [
+            {
+                FieldName.TARGET: target,
+                FieldName.START: start,
+                FieldName.FEAT_DYNAMIC_REAL: [counts, duration, dayofweek, monthofyear],
+            }
+            for (target, start, counts, duration, dayofweek, monthofyear) in zip(
+                padded_targets_stack[:, :-prediction_length],
+                start_stack,
+                padded_counts_stack[:, :-prediction_length],
+                padded_duration_stack[:, :-prediction_length],
+                day_of_week_variable[:, :-prediction_length],
+                month_of_year_variable[:, :-prediction_length]
+            )
+        ],
+        freq=freq,
+    )
+
+    test_ds = ListDataset(
+        [
+            {
+                FieldName.TARGET: target,
+                FieldName.START: start,
+                FieldName.FEAT_DYNAMIC_REAL: [counts, duration, dayofweek, monthofyear],
+            }
+            for (target, start, counts, duration, dayofweek, monthofyear) in zip(
+                padded_targets_stack,
+                start_stack,
+                padded_counts_stack,
+                padded_duration_stack,
+                day_of_week_variable,
+                month_of_year_variable
+            )
+        ],
+        freq=freq,
+    )
+
+
+    return train_ds, val_ds, test_ds
+
+def save_listdataset(dataset, path, file_name):
+    """
+    Save a ListDataset to a JSON file.
+
+    Parameters:
+    - dataset: ListDataset object to save.
+    - path: Directory where to save the dataset.
+    - file_name: Name of the JSON file.
+    """
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, file_name), 'w') as f:
+        for entry in dataset:
+            json.dump(entry, f)
+            f.write("\n")
+    print(f"Dataset saved to {os.path.join(path, file_name)}")
+
+
+
+def visualize_train_val_test_data(train_ds, val_ds, test_ds):
+    """
+    Visualizes the training, validation, and test datasets.
+    
+    Parameters:
+        train_ds (ListDataset): The training dataset.
+        val_ds (ListDataset): The validation dataset.
+        test_ds (ListDataset): The test dataset.
+    """
+    train_entry = next(iter(train_ds))
+    train_series = to_pandas(train_entry)
+    
+    val_entry = next(iter(val_ds))
+    val_series = to_pandas(val_entry)
+    
+    test_entry = next(iter(test_ds))
+    test_series = to_pandas(test_entry)
+    
+    plt.figure(figsize=(10, 6))
+    
+    test_series.plot(color='grey')
+    plt.axvline(train_series.index[-1], color="red")  # end of train dataset
+    plt.axvline(val_series.index[-1], color="blue")  # end of train dataset
+    plt.grid(which="both")
+    plt.legend(["test series", "end of train series", "end of val series"], loc="upper left")
+    plt.show()
+
+    plt.savefig('train_val_test_data_vis.jpg')
+
+
+def test_feature_engineering():
+    freq = '1D'
+    target = "Energy (kWh)"
+    # fields = ["counts", "Energy (kWh)"]
+    fields = ["Station Name", "Event Count", "Total Energy (kWh)", f"Total Charging Duration ({freq})"]
+
+    testData, station_name_map = multiple_time_series(df, target, fields)
+
+    dfs_dict = handle_missing_data(testData, freq, "target")
+
+    ds, counts, charge_duration = generate_counts_duration(dfs_dict)
+
+    train_length, validation_length, prediction_length = train_test_split(ds, train_val_test_split = [0.7, 0.2, 0.1])
+    
+    start_date, end_date = get_min_max_date(testData)
+    
+    day_of_week_variable, day_of_month_variable, day_of_year_variable, week_of_year_variable, month_of_year_variable = add_multiple_features(ds, start_date, end_date, freq)
+
+    padded_targets_stack, padded_counts_stack, padded_duration_stack, start_stack = pad_time_series(ds, counts, charge_duration, start_date, freq)
+
+    train_ds, val_ds, test_ds = create_datasets(padded_targets_stack, start_stack, padded_counts_stack, 
+                    padded_duration_stack,
+                    day_of_week_variable, month_of_year_variable, 
+                    train_length, prediction_length, freq)
+    
+    visualize_train_val_test_data(train_ds, val_ds, test_ds)
+
+    # Define the path where you want to save the dataset
+    save_dataset_path = '.data/'
+
+    save_listdataset(train_ds, save_dataset_path, 'train_ds.json')
+    save_listdataset(val_ds, save_dataset_path, 'val_ds.json') 
+    save_listdataset(test_ds, 'save_dataset_path', 'test_ds.json')
+    print(f"Passed all the tests! Saved datasets to {save_dataset_path}")
+
+if __name__ == "__main__":
+
+    # Path to the dataset in the data folder
+    data_file_path = os.path.join('data', 'aggregated_D.csv') 
+
+    # Load the aggregated dataset
+    df = pd.read_csv(data_file_path, low_memory=False)
+
+    df.set_index('Start Date', inplace=True)
+
+
+    test_feature_engineering()
