@@ -43,8 +43,8 @@ print(f"The best model is: {best_model}")
 
 ### 2. Aggregation Methods
 
-- **Method 1**: Description of method 1.
-- **Method 2**: Description of method 2.
+- **Method 1**: Description of method 1. - add later
+- **Method 2**: Description of method 2. - add later
 
 ### 3. Estimators
 
@@ -52,7 +52,11 @@ print(f"The best model is: {best_model}")
 - **TFT Estimator**: Temporal Fusion Transformer for handling time series with varying temporal patterns.
 - **Transformer Estimator**: Transformer model for advanced sequence modeling.
 
-### 4. Fine Tuning
+### 4. Emsemble methods
+
+- add later
+
+### 5. Fine Tuning
 
 You can fine-tune the estimators using the \`fine_tuning.py\` module:
 
