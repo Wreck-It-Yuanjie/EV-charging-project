@@ -18,7 +18,7 @@ This package provides tools and methods for EV charging demand prediction, inclu
 To install the package, you can use the following command:
 
 \`\`\`bash
-pip install git+https://github.com/yourusername/yourpackagename.git
+pip install git+https://github.com/yuanjietu/EV-charging-project/tree/main/modules
 \`\`\`
 
 Or if you have a \`setup.py\`:
