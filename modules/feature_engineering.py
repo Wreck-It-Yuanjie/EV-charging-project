@@ -5,19 +5,22 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 import json
+from pandas import Period
 from gluonts.time_feature import (
     day_of_week,
     day_of_month,
     day_of_year,
     week_of_year,
-    month_of_year,
+    month_of_year, 
 )
 from gluonts.dataset.repository import get_dataset, dataset_names
 from gluonts.dataset.util import to_pandas
-from gluonts.dataset.common import ListDataset
+from gluonts.dataset.common import ListDataset, TrainDatasets
 from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.field_names import FieldName
 from sklearn.preprocessing import LabelEncoder
+from gluonts.dataset.common import TrainDatasets, MetaData
+from pathlib import Path
 
 def multiple_time_series(data, target, fields):
     """
@@ -222,23 +225,88 @@ def create_datasets(padded_targets_stack, start_stack, padded_counts_stack,
 
     return train_ds, val_ds, test_ds
 
-def save_listdataset(dataset, path, file_name):
+def get_metadata(freq, prediction_length):
+    metadata = MetaData(
+        freq = freq,
+        prediction_length = prediction_length
+    )
+    return metadata
+
+def save_dataset(train_ds, val_ds, test_ds, metadata):
     """
-    Save a ListDataset to a JSON file.
+    Saves the training, validation, and test datasets to JSON format.
 
     Parameters:
-    - dataset: ListDataset object to save.
-    - path: Directory where to save the dataset.
-    - file_name: Name of the JSON file.
+    - train_ds: The training dataset.
+    - val_ds: The validation dataset.
+    - test_ds: The test dataset.
+    - metadata: The metadata for the datasets.
+    - path_str: The base directory where datasets should be saved.
     """
-    os.makedirs(path, exist_ok=True)
-    with open(os.path.join(path, file_name), 'w') as f:
-        for entry in dataset:
-            json.dump(entry, f)
-            f.write("\n")
-    print(f"Dataset saved to {os.path.join(path, file_name)}")
 
+    def save_to_json(dataset, file_path):
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, np.int64):  # Handle numpy integers
+                return int(obj)
+            if isinstance(obj, np.float64):  # Handle numpy floats
+                return float(obj)
+            if isinstance(obj, Period):  # Convert Period to string
+                return str(obj)
+            return obj
+        
+        data = list(dataset)
+        with open(file_path, 'w') as f:
+            for entry in data:
+                serializable_entry = {k: convert_to_serializable(v) for k, v in entry.items()}
+                json.dump(serializable_entry, f)
+                f.write('\n')
 
+    # Define the data directory relative to the current working directory
+    data_dir = "./data"
+    os.makedirs(data_dir, exist_ok=True)
+
+    save_to_json(train_ds, os.path.join(data_dir, "train.json"))
+    save_to_json(test_ds, os.path.join(data_dir, "test.json"))
+    save_to_json(val_ds, os.path.join(data_dir, "val.json"))
+    
+    # Save metadata
+    with open(os.path.join(data_dir, "metadata.json"), 'w') as f:
+        json.dump(metadata.__dict__, f)
+
+def load_dataset():
+    """
+    Loads the training, validation, and test datasets from JSON format.
+
+    Parameters:
+    - path_str: The base directory where datasets are saved.
+
+    Returns:
+    - Tuple: Loaded training, validation, and test datasets.
+    """
+
+    # Define the data directory relative to the current working directory
+    data_dir = "./data"
+
+    def load_from_json(file_path):
+        with open(file_path, 'r') as f:
+            data = [json.loads(line) for line in f]
+        # Convert back any necessary fields here
+        for entry in data:
+            if "start" in entry:
+                entry["start"] = Period(entry["start"])  # Convert start field back to Period
+        return ListDataset(data, freq=metadata["freq"])
+
+    # Load metadata
+    with open(os.path.join(data_dir, "metadata.json"), 'r') as f:
+        metadata = json.load(f)
+
+    train_ds = load_from_json(os.path.join(data_dir, "train.json"))
+    test_ds = load_from_json(os.path.join(data_dir, "test.json"))
+    val_ds = load_from_json(os.path.join(data_dir, "val.json"))
+
+    return train_ds, val_ds, test_ds, metadata
 
 def visualize_train_val_test_data(train_ds, val_ds, test_ds):
     """
@@ -267,7 +335,7 @@ def visualize_train_val_test_data(train_ds, val_ds, test_ds):
     plt.legend(["test series", "end of train series", "end of val series"], loc="upper left")
     plt.show()
 
-    plt.savefig('train_val_test_data_vis.jpg')
+    plt.savefig('./assets/train_val_test_data_vis.jpg')
 
 
 def test_feature_engineering():
@@ -294,16 +362,15 @@ def test_feature_engineering():
                     padded_duration_stack,
                     day_of_week_variable, month_of_year_variable, 
                     train_length, prediction_length, freq)
+
+    metadata = get_metadata(freq, prediction_length)
+    save_dataset(train_ds, val_ds, test_ds, metadata)
+
+    train_ds, val_ds, test_ds, metadata = load_dataset()
+    print(train_ds)
     
     visualize_train_val_test_data(train_ds, val_ds, test_ds)
-
-    # Define the path where you want to save the dataset
-    save_dataset_path = '.data/'
-
-    save_listdataset(train_ds, save_dataset_path, 'train_ds.json')
-    save_listdataset(val_ds, save_dataset_path, 'val_ds.json') 
-    save_listdataset(test_ds, 'save_dataset_path', 'test_ds.json')
-    print(f"Passed all the tests! Saved datasets to {save_dataset_path}")
+    print("Passed all the tests!")
 
 if __name__ == "__main__":
 

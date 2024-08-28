@@ -224,7 +224,3 @@ def retrain_with_best_hyperparameters(train_ds, val_ds, test_ds, trial, freq, va
 
     return final_predictor, forecasts, tss
 
-
-# Example Usage:
-# trial = run_optuna_study(val_ds, validation_length, freq, n_trials=10)
-# final_predictor, forecasts, tss = retrain_with_best_hyperparameters(train_ds, val_ds, test_ds, trial, freq, validation_length)

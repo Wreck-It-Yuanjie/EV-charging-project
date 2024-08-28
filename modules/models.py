@@ -160,3 +160,10 @@ def create_naive_predictor(prediction_length):
         prediction_length=prediction_length,
         season_length=100
     )
+
+def test_models():
+    pass
+
+
+if __name__ == "__main__":
+    test_models()

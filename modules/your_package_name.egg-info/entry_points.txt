@@ -1,0 +1,3 @@
+[console_scripts]
+run-analysis = your_package_name:run_analysis
+
