@@ -1,4 +1,4 @@
-# Easy EV charging demand prediction
+# EcoForecast
 
 ## Overview
 
